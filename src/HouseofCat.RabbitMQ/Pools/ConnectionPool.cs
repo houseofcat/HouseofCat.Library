@@ -7,6 +7,7 @@ using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
+using Nito.AsyncEx;
 
 namespace HouseofCat.RabbitMQ.Pools
 {
@@ -26,7 +27,7 @@ namespace HouseofCat.RabbitMQ.Pools
         private readonly ILogger<ConnectionPool> _logger;
         private readonly SemaphoreSlim _poolLock = new SemaphoreSlim(1, 1);
 
-        private Channel<IConnectionHost> _connections;
+        private AsyncLazy<Channel<IConnectionHost>> _lazyConnections;
         private ConnectionFactory _connectionFactory;
         private bool _disposedValue;
         private ulong _currentConnectionId;
@@ -40,12 +41,11 @@ namespace HouseofCat.RabbitMQ.Pools
 
             _logger = LogHelper.GetLogger<ConnectionPool>();
 
-            _connections = Channel.CreateBounded<IConnectionHost>(Options.PoolOptions.MaxConnections);
+            _lazyConnections = new AsyncLazy<Channel<IConnectionHost>>(
+                CreateConnectionsAsync, AsyncLazyFlags.ExecuteOnCallingThread | AsyncLazyFlags.RetryOnFailure);
             _connectionFactory = CreateConnectionFactory();
-
-            CreateConnectionsAsync().GetAwaiter().GetResult();
         }
-
+        
         private ConnectionFactory CreateConnectionFactory()
         {
             var cf = new ConnectionFactory
@@ -82,16 +82,18 @@ namespace HouseofCat.RabbitMQ.Pools
         protected virtual IConnectionHost CreateConnectionHost(ulong connectionId, IConnection connection) =>
             new ConnectionHost(connectionId, connection);
 
-        private async Task CreateConnectionsAsync()
+        private async Task<Channel<IConnectionHost>> CreateConnectionsAsync()
         {
             _logger.LogTrace(LogMessages.ConnectionPools.CreateConnections);
 
-            for (int i = 0; i < Options.PoolOptions.MaxConnections; i++)
+            var connections = Channel.CreateBounded<IConnectionHost>(Options.PoolOptions.MaxConnections);
+            
+            for (var i = 0; i < Options.PoolOptions.MaxConnections; i++)
             {
                 var serviceName = string.IsNullOrEmpty(Options.PoolOptions.ServiceName) ? $"HoC.RabbitMQ:{i}" : $"{Options.PoolOptions.ServiceName}:{i}";
                 try
                 {
-                    await _connections
+                    await connections
                         .Writer
                         .WriteAsync(CreateConnectionHost(_currentConnectionId++, CreateConnection(serviceName)));
                 }
@@ -103,12 +105,15 @@ namespace HouseofCat.RabbitMQ.Pools
             }
 
             _logger.LogTrace(LogMessages.ConnectionPools.CreateConnectionsComplete);
+            
+            return connections;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public async ValueTask<IConnectionHost> GetConnectionAsync()
         {
-            if (!await _connections
+            var connections = await _lazyConnections.ConfigureAwait(false);
+            if (!await connections
                 .Reader
                 .WaitToReadAsync()
                 .ConfigureAwait(false))
@@ -118,7 +123,7 @@ namespace HouseofCat.RabbitMQ.Pools
 
             while (true)
             {
-                var connHost = await _connections
+                var connHost = await connections
                     .Reader
                     .ReadAsync().ConfigureAwait(false);
 
@@ -138,7 +143,8 @@ namespace HouseofCat.RabbitMQ.Pools
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public async ValueTask ReturnConnectionAsync(IConnectionHost connHost)
         {
-            if (!await _connections
+            var connections = await _lazyConnections.ConfigureAwait(false);
+            if (!await connections
                     .Writer
                     .WaitToWriteAsync()
                     .ConfigureAwait(false))
@@ -146,7 +152,7 @@ namespace HouseofCat.RabbitMQ.Pools
                 throw new InvalidOperationException(ExceptionMessages.GetConnectionErrorMessage);
             }
 
-            await _connections
+            await connections
                 .Writer
                 .WriteAsync(connHost);
         }
@@ -159,10 +165,11 @@ namespace HouseofCat.RabbitMQ.Pools
                 .WaitAsync()
                 .ConfigureAwait(false);
 
-            _connections.Writer.Complete();
+            var connections = await _lazyConnections.ConfigureAwait(false);
+            connections.Writer.Complete();
 
-            await _connections.Reader.WaitToReadAsync().ConfigureAwait(false);
-            while (_connections.Reader.TryRead(out IConnectionHost connHost))
+            await connections.Reader.WaitToReadAsync().ConfigureAwait(false);
+            while (connections.Reader.TryRead(out IConnectionHost connHost))
             {
                 try
                 { connHost.Close(); }
@@ -184,7 +191,7 @@ namespace HouseofCat.RabbitMQ.Pools
                 }
 
                 _connectionFactory = null;
-                _connections = null;
+                _lazyConnections = null;
                 _disposedValue = true;
             }
         }

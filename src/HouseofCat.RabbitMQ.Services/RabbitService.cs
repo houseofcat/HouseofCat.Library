@@ -447,9 +447,8 @@ namespace HouseofCat.RabbitMQ.Services
             var error = false;
             try
             {
-                result = chanHost
-                    .GetChannel()
-                    .BasicGet(queueName, true);
+                var channel = await chanHost.GetChannelAsync().ConfigureAwait(false);
+                result = channel.BasicGet(queueName, true);
             }
             catch { error = true; }
             finally
@@ -483,9 +482,8 @@ namespace HouseofCat.RabbitMQ.Services
             var error = false;
             try
             {
-                result = chanHost
-                    .GetChannel()
-                    .BasicGet(queueName, true);
+                var channel = await chanHost.GetChannelAsync().ConfigureAwait(false);
+                result = channel.BasicGet(queueName, true);
             }
             catch { error = true; }
             finally

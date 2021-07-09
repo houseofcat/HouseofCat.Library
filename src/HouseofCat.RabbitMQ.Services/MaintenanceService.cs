@@ -29,11 +29,12 @@ namespace HouseofCat.RabbitMQ.Services
 
             try
             {
-                channelHost.GetChannel().QueuePurge(queueName);
+                var channel = await channelHost.GetChannelAsync().ConfigureAwait(false);
+                channel.QueuePurge(queueName);
 
                 if (deleteQueueAfter)
                 {
-                    channelHost.GetChannel().QueueDelete(queueName, false, false);
+                    channel.QueueDelete(queueName, false, false);
                 }
             }
             catch { error = true; }
@@ -57,16 +58,17 @@ namespace HouseofCat.RabbitMQ.Services
 
             var error = false;
             var channelHost = await channelPool.GetChannelAsync().ConfigureAwait(false);
-            var properties = channelHost.GetChannel().CreateBasicProperties();
+            var channel = await channelHost.GetChannelAsync().ConfigureAwait(false);
+            var properties = channel.CreateBasicProperties();
             properties.DeliveryMode = 2;
 
             try
             {
-                var result = channelHost.GetChannel().BasicGet(originQueueName, true);
+                var result = channel.BasicGet(originQueueName, true);
 
                 if (result?.Body != null)
                 {
-                    channelHost.GetChannel().BasicPublish(string.Empty, targetQueueName, false, properties, result.Body);
+                    channel.BasicPublish(string.Empty, targetQueueName, false, properties, result.Body);
                 }
             }
             catch { error = true; }
@@ -92,13 +94,14 @@ namespace HouseofCat.RabbitMQ.Services
 
             var error = false;
             var channelHost = await originChannelPool.GetChannelAsync().ConfigureAwait(false);
-            var properties = channelHost.GetChannel().CreateBasicProperties();
+            var channel = await channelHost.GetChannelAsync().ConfigureAwait(false);
+            var properties = channel.CreateBasicProperties();
             properties.DeliveryMode = 2;
 
             BasicGetResult result = null;
             try
             {
-                result = channelHost.GetChannel().BasicGet(originQueueName, true);
+                result = channel.BasicGet(originQueueName, true);
             }
             catch { error = true; }
             finally
@@ -112,7 +115,8 @@ namespace HouseofCat.RabbitMQ.Services
                 try
                 {
                     var targetChannelHost = await targetChannelPool.GetChannelAsync().ConfigureAwait(false);
-                    targetChannelHost.GetChannel().BasicPublish(string.Empty, targetQueueName, false, properties, result.Body);
+                    var targetChannel = await targetChannelHost.GetChannelAsync().ConfigureAwait(false);
+                    targetChannel.BasicPublish(string.Empty, targetQueueName, false, properties, result.Body);
                 }
                 catch { error = true; }
                 finally
@@ -136,7 +140,8 @@ namespace HouseofCat.RabbitMQ.Services
 
             var error = false;
             var channelHost = await channelPool.GetChannelAsync().ConfigureAwait(false);
-            var properties = channelHost.GetChannel().CreateBasicProperties();
+            var channel = await channelHost.GetChannelAsync().ConfigureAwait(false);
+            var properties = channel.CreateBasicProperties();
             properties.DeliveryMode = 2;
 
             try
@@ -145,12 +150,12 @@ namespace HouseofCat.RabbitMQ.Services
 
                 while (true)
                 {
-                    result = channelHost.GetChannel().BasicGet(originQueueName, true);
+                    result = channel.BasicGet(originQueueName, true);
                     if (result == null) { break; }
 
                     if (result?.Body != null)
                     {
-                        channelHost.GetChannel().BasicPublish(string.Empty, targetQueueName, false, properties, result.Body);
+                        channel.BasicPublish(string.Empty, targetQueueName, false, properties, result.Body);
                     }
                 }
             }
@@ -177,7 +182,8 @@ namespace HouseofCat.RabbitMQ.Services
 
             var error = false;
             var channelHost = await originChannelPool.GetChannelAsync().ConfigureAwait(false);
-            var properties = channelHost.GetChannel().CreateBasicProperties();
+            var channel = await channelHost.GetChannelAsync().ConfigureAwait(false);
+            var properties = channel.CreateBasicProperties();
             properties.DeliveryMode = 2;
 
             BasicGetResult result = null;
@@ -186,7 +192,7 @@ namespace HouseofCat.RabbitMQ.Services
             {
                 try
                 {
-                    result = channelHost.GetChannel().BasicGet(originQueueName, true);
+                    result = channel.BasicGet(originQueueName, true);
                     if (result == null) { break; }
                 }
                 catch { error = true; }
@@ -201,7 +207,8 @@ namespace HouseofCat.RabbitMQ.Services
                     try
                     {
                         var targetChannelHost = await targetChannelPool.GetChannelAsync().ConfigureAwait(false);
-                        targetChannelHost.GetChannel().BasicPublish(string.Empty, targetQueueName, false, properties, result.Body);
+                        var targetChannel = await targetChannelHost.GetChannelAsync().ConfigureAwait(false);
+                        targetChannel.BasicPublish(string.Empty, targetQueueName, false, properties, result.Body);
                     }
                     catch { error = true; }
                     finally

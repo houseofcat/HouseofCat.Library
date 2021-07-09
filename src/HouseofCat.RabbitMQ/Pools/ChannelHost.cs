@@ -6,6 +6,7 @@ using System;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
+using Nito.AsyncEx;
 
 namespace HouseofCat.RabbitMQ.Pools
 {
@@ -16,8 +17,10 @@ namespace HouseofCat.RabbitMQ.Pools
         bool Closed { get; }
         bool FlowControlled { get; }
 
+        Task<IModel> GetChannelAsync();
         IModel GetChannel();
         Task<bool> MakeChannelAsync();
+        Task CloseAsync();
         void Close();
         Task<bool> HealthyAsync();
     }
@@ -25,7 +28,7 @@ namespace HouseofCat.RabbitMQ.Pools
     public class ChannelHost : IChannelHost, IDisposable
     {
         private readonly ILogger<ChannelHost> _logger;
-        private IModel _channel { get; set; }
+        private AsyncLazy<IModel> _lazyChannel { get; set; }
         private IConnectionHost _connHost { get; set; }
 
         public ulong ChannelId { get; set; }
@@ -45,19 +48,42 @@ namespace HouseofCat.RabbitMQ.Pools
             ChannelId = channelId;
             _connHost = connHost;
             Ackable = ackable;
-
-            MakeChannelAsync().GetAwaiter().GetResult();
+            
+            _lazyChannel = new AsyncLazy<IModel>(
+                CreateChannelAsync, AsyncLazyFlags.ExecuteOnCallingThread | AsyncLazyFlags.RetryOnFailure);
         }
-
+        
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public IModel GetChannel()
+        public async Task<IModel> GetChannelAsync()
         {
-            _hostLock.Wait();
+            await _hostLock.WaitAsync().ConfigureAwait(false);
 
             try
-            { return _channel; }
+            {
+                return await _lazyChannel.ConfigureAwait(false);
+            }
             finally
-            { _hostLock.Release(); }
+            {
+                _hostLock.Release();
+            }
+        }
+
+        public IModel GetChannel() => GetChannelAsync().GetAwaiter().GetResult();
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private Task<IModel> CreateChannelAsync()
+        {
+            var channel = _connHost.Connection.CreateModel();
+
+            if (Ackable)
+            {
+                channel.ConfirmSelect();
+            }
+
+            channel.FlowControl += FlowControl;
+            channel.ModelShutdown += ChannelClose;
+
+            return Task.FromResult(channel);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -67,30 +93,22 @@ namespace HouseofCat.RabbitMQ.Pools
 
             try
             {
-                if (_channel != null)
+                if (_lazyChannel.IsStarted)
                 {
-                    _channel.FlowControl -= FlowControl;
-                    _channel.ModelShutdown -= ChannelClose;
-                    Close();
-                    _channel = null;
+                    var channel = await _lazyChannel.ConfigureAwait(false);
+                    channel.FlowControl -= FlowControl;
+                    channel.ModelShutdown -= ChannelClose;
+                    await CloseAsync().ConfigureAwait(false);
                 }
 
-                _channel = _connHost.Connection.CreateModel();
-
-                if (Ackable)
-                {
-                    _channel.ConfirmSelect();
-                }
-
-                _channel.FlowControl += FlowControl;
-                _channel.ModelShutdown += ChannelClose;
-
+                _lazyChannel = new AsyncLazy<IModel>(
+                    CreateChannelAsync, AsyncLazyFlags.ExecuteOnCallingThread | AsyncLazyFlags.RetryOnFailure);
+                await _lazyChannel.ConfigureAwait(false);
                 return true;
             }
             catch (Exception ex)
             {
                 _logger.LogError("Making a channel failed. Error: {0}", ex.Message);
-                _channel = null;
                 return false;
             }
             finally
@@ -122,22 +140,34 @@ namespace HouseofCat.RabbitMQ.Pools
         public async Task<bool> HealthyAsync()
         {
             var connectionHealthy = await _connHost.HealthyAsync().ConfigureAwait(false);
-
-            return connectionHealthy && !FlowControlled && (_channel?.IsOpen ?? false);
+            try
+            {
+                var channel = await _lazyChannel.ConfigureAwait(false);
+                return connectionHealthy && !FlowControlled && channel.IsOpen;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private const int CloseCode = 200;
         private const string CloseMessage = "HouseofCat.RabbitMQ manual close channel initiated.";
 
-        public void Close()
+        public async Task CloseAsync()
         {
-            if (!Closed || !_channel.IsOpen)
+            try
             {
-                try
-                { _channel.Close(CloseCode, CloseMessage); }
-                catch { }
+                var channel = await _lazyChannel.ConfigureAwait(false);
+                if (!Closed || !channel.IsOpen)
+                {
+                    channel.Close(CloseCode, CloseMessage);
+                }
             }
+            catch { }
         }
+
+        public void Close() => CloseAsync().GetAwaiter().GetResult();
 
         protected virtual void Dispose(bool disposing)
         {
@@ -148,7 +178,7 @@ namespace HouseofCat.RabbitMQ.Pools
                     _hostLock.Dispose();
                 }
 
-                _channel = null;
+                _lazyChannel = null;
                 _connHost = null;
                 _disposedValue = true;
             }

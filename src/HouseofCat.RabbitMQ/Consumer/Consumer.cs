@@ -123,7 +123,7 @@ namespace HouseofCat.RabbitMQ
 
                     if (immediate)
                     {
-                        _chanHost.Close();
+                        await _chanHost.CloseAsync().ConfigureAwait(false);
                     }
 
                     await _dataBuffer
@@ -159,11 +159,12 @@ namespace HouseofCat.RabbitMQ
 
                 try
                 {
-                    _asyncConsumer = CreateAsyncConsumer();
+                    _asyncConsumer = await CreateAsyncConsumer().ConfigureAwait(false);
                     if (_asyncConsumer == null) { return false; }
 
-                    _chanHost
-                        .GetChannel()
+                    var channel = await _chanHost.GetChannelAsync().ConfigureAwait(false);
+                    
+                    channel
                         .BasicConsume(
                             ConsumerOptions.QueueName,
                             ConsumerOptions.AutoAck ?? false,
@@ -191,11 +192,12 @@ namespace HouseofCat.RabbitMQ
 
                 try
                 {
-                    _consumer = CreateConsumer();
+                    _consumer = await CreateConsumer().ConfigureAwait(false);
                     if (_consumer == null) { return false; }
 
-                    _chanHost
-                        .GetChannel()
+                    
+                    var channel = await _chanHost.GetChannelAsync().ConfigureAwait(false);
+                    channel
                         .BasicConsume(
                             ConsumerOptions.QueueName,
                             ConsumerOptions.AutoAck ?? false,
@@ -255,12 +257,13 @@ namespace HouseofCat.RabbitMQ
                 _chanHost?.ChannelId ?? 0ul);
         }
 
-        private EventingBasicConsumer CreateConsumer()
+        private async Task<EventingBasicConsumer> CreateConsumer()
         {
             EventingBasicConsumer consumer = null;
 
-            _chanHost.GetChannel().BasicQos(0, ConsumerOptions.BatchSize.Value, false);
-            consumer = new EventingBasicConsumer(_chanHost.GetChannel());
+            var channel = await _chanHost.GetChannelAsync().ConfigureAwait(false);
+            channel.BasicQos(0, ConsumerOptions.BatchSize.Value, false);
+            consumer = new EventingBasicConsumer(channel);
 
             consumer.Received += ReceiveHandler;
             consumer.Shutdown += ConsumerShutdown;
@@ -270,7 +273,8 @@ namespace HouseofCat.RabbitMQ
 
         private async void ReceiveHandler(object _, BasicDeliverEventArgs bdea)
         {
-            var rabbitMessage = new ReceivedData(_chanHost.GetChannel(), bdea, !(ConsumerOptions.AutoAck ?? false));
+            var rabbitMessage = new ReceivedData(
+                await _chanHost.GetChannelAsync().ConfigureAwait(false), bdea, !(ConsumerOptions.AutoAck ?? false));
 
             _logger.LogDebug(
                 LogMessages.Consumers.ConsumerMessageReceived,
@@ -294,12 +298,13 @@ namespace HouseofCat.RabbitMQ
                 .ConfigureAwait(false);
         }
 
-        private AsyncEventingBasicConsumer CreateAsyncConsumer()
+        private async Task<AsyncEventingBasicConsumer> CreateAsyncConsumer()
         {
             AsyncEventingBasicConsumer consumer = null;
 
-            _chanHost.GetChannel().BasicQos(0, ConsumerOptions.BatchSize.Value, false);
-            consumer = new AsyncEventingBasicConsumer(_chanHost.GetChannel());
+            var channel = await _chanHost.GetChannelAsync().ConfigureAwait(false);
+            channel.BasicQos(0, ConsumerOptions.BatchSize.Value, false);
+            consumer = new AsyncEventingBasicConsumer(channel);
 
             consumer.Received += ReceiveHandlerAsync;
             consumer.Shutdown += ConsumerShutdownAsync;
@@ -309,7 +314,8 @@ namespace HouseofCat.RabbitMQ
 
         private async Task ReceiveHandlerAsync(object o, BasicDeliverEventArgs bdea)
         {
-            var rabbitMessage = new ReceivedData(_chanHost.GetChannel(), bdea, !(ConsumerOptions.AutoAck ?? false));
+            var rabbitMessage = new ReceivedData(
+                await _chanHost.GetChannelAsync().ConfigureAwait(false), bdea, !(ConsumerOptions.AutoAck ?? false));
 
             _logger.LogDebug(
                 LogMessages.Consumers.ConsumerAsyncMessageReceived,

@@ -211,7 +211,8 @@ namespace HouseofCat.RabbitMQ
 
             try
             {
-                chanHost.GetChannel().QueueDeclare(
+                var channel = await chanHost.GetChannelAsync().ConfigureAwait(false);
+                channel.QueueDeclare(
                     queue: queueName,
                     durable: durable,
                     exclusive: exclusive,
@@ -244,7 +245,8 @@ namespace HouseofCat.RabbitMQ
 
             try
             {
-                chanHost.GetChannel().QueueDelete(
+                var channel = await chanHost.GetChannelAsync().ConfigureAwait(false);
+                channel.QueueDelete(
                     queue: queueName,
                     ifUnused: onlyIfUnused,
                     ifEmpty: onlyIfEmpty);
@@ -278,7 +280,8 @@ namespace HouseofCat.RabbitMQ
 
             try
             {
-                chanHost.GetChannel().QueueBind(
+                var channel = await chanHost.GetChannelAsync().ConfigureAwait(false);
+                channel.QueueBind(
                     queue: queueName,
                     exchange: exchangeName,
                     routingKey: routingKey,
@@ -313,7 +316,8 @@ namespace HouseofCat.RabbitMQ
 
             try
             {
-                chanHost.GetChannel().QueueUnbind(
+                var channel = await chanHost.GetChannelAsync().ConfigureAwait(false);
+                channel.QueueUnbind(
                     queue: queueName,
                     exchange: exchangeName,
                     routingKey: routingKey,
@@ -349,7 +353,8 @@ namespace HouseofCat.RabbitMQ
 
             try
             {
-                chanHost.GetChannel().ExchangeDeclare(
+                var channel = await chanHost.GetChannelAsync().ConfigureAwait(false);
+                channel.ExchangeDeclare(
                     exchange: exchangeName,
                     type: exchangeType,
                     durable: durable,
@@ -378,7 +383,8 @@ namespace HouseofCat.RabbitMQ
 
             try
             {
-                chanHost.GetChannel().ExchangeDelete(
+                var channel = await chanHost.GetChannelAsync().ConfigureAwait(false);
+                channel.ExchangeDelete(
                     exchange: exchangeName,
                     ifUnused: onlyIfUnused);
             }
@@ -411,7 +417,8 @@ namespace HouseofCat.RabbitMQ
 
             try
             {
-                chanHost.GetChannel().ExchangeBind(
+                var channel = await chanHost.GetChannelAsync().ConfigureAwait(false);
+                channel.ExchangeBind(
                     destination: childExchangeName,
                     source: parentExchangeName,
                     routingKey: routingKey,
@@ -446,7 +453,8 @@ namespace HouseofCat.RabbitMQ
 
             try
             {
-                chanHost.GetChannel().ExchangeUnbind(
+                var channel = await chanHost.GetChannelAsync().ConfigureAwait(false);
+                channel.ExchangeUnbind(
                     destination: childExchangeName,
                     source: parentExchangeName,
                     routingKey: routingKey,

@@ -7,6 +7,7 @@ using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
+using Nito.AsyncEx;
 
 namespace HouseofCat.RabbitMQ.Pools
 {
@@ -53,8 +54,8 @@ namespace HouseofCat.RabbitMQ.Pools
         private readonly ILogger<ChannelPool> _logger;
         private readonly IConnectionPool _connectionPool;
         private readonly SemaphoreSlim _poolLock = new SemaphoreSlim(1, 1);
-        private Channel<IChannelHost> _channels;
-        private Channel<IChannelHost> _ackChannels;
+        private AsyncLazy<Channel<IChannelHost>> _lazyChannels;
+        private AsyncLazy<Channel<IChannelHost>> _lazyAckChannels;
         private ConcurrentDictionary<ulong, bool> _flaggedChannels;
         private bool _disposedValue;
 
@@ -74,31 +75,26 @@ namespace HouseofCat.RabbitMQ.Pools
             _logger = LogHelper.GetLogger<ChannelPool>();
             _connectionPool = connPool;
             _flaggedChannels = new ConcurrentDictionary<ulong, bool>();
-            _channels = Channel.CreateBounded<IChannelHost>(Options.PoolOptions.MaxChannels);
-            _ackChannels = Channel.CreateBounded<IChannelHost>(Options.PoolOptions.MaxChannels);
-
-            CreateChannelsAsync().GetAwaiter().GetResult();
+            _lazyChannels = new AsyncLazy<Channel<IChannelHost>>(() => CreateChannelsAsync(false), 
+                AsyncLazyFlags.ExecuteOnCallingThread | AsyncLazyFlags.RetryOnFailure);
+            _lazyAckChannels = new AsyncLazy<Channel<IChannelHost>>(() => CreateChannelsAsync(true), 
+                AsyncLazyFlags.ExecuteOnCallingThread | AsyncLazyFlags.RetryOnFailure);
         }
 
-        private async Task CreateChannelsAsync()
+        private async Task<Channel<IChannelHost>> CreateChannelsAsync(bool ackable)
         {
-            for (int i = 0; i < Options.PoolOptions.MaxChannels; i++)
-            {
-                var chanHost = await CreateChannelAsync(CurrentChannelId++, false).ConfigureAwait(false);
+            var channels = Channel.CreateBounded<IChannelHost>(Options.PoolOptions.MaxChannels);
 
-                await _channels
+            for (var i = 0; i < Options.PoolOptions.MaxChannels; i++)
+            {
+                var chanHost = await CreateChannelAsync(CurrentChannelId++, ackable).ConfigureAwait(false);
+
+                await channels
                     .Writer
                     .WriteAsync(chanHost);
             }
-
-            for (int i = 0; i < Options.PoolOptions.MaxChannels; i++)
-            {
-                var chanHost = await CreateChannelAsync(CurrentChannelId++, true).ConfigureAwait(false);
-
-                await _ackChannels
-                    .Writer
-                    .WriteAsync(chanHost);
-            }
+            
+            return channels;
         }
 
         /// <summary>
@@ -114,7 +110,9 @@ namespace HouseofCat.RabbitMQ.Pools
         {
             if (Shutdown) throw new InvalidOperationException(ExceptionMessages.ChannelPoolValidationMessage);
 
-            if (!await _channels
+            var channels = await _lazyChannels.ConfigureAwait(false);
+            
+            if (!await channels
                 .Reader
                 .WaitToReadAsync()
                 .ConfigureAwait(false))
@@ -122,7 +120,7 @@ namespace HouseofCat.RabbitMQ.Pools
                 throw new InvalidOperationException(ExceptionMessages.ChannelPoolGetChannelError);
             }
 
-            var chanHost = await _channels
+            var chanHost = await channels
                 .Reader
                 .ReadAsync()
                 .ConfigureAwait(false);
@@ -157,7 +155,9 @@ namespace HouseofCat.RabbitMQ.Pools
         {
             if (Shutdown) throw new InvalidOperationException(ExceptionMessages.ChannelPoolValidationMessage);
 
-            if (!await _ackChannels
+            var ackChannels = await _lazyAckChannels.ConfigureAwait(false);
+            
+            if (!await ackChannels
                 .Reader
                 .WaitToReadAsync()
                 .ConfigureAwait(false))
@@ -165,7 +165,7 @@ namespace HouseofCat.RabbitMQ.Pools
                 throw new InvalidOperationException(ExceptionMessages.ChannelPoolGetChannelError);
             }
 
-            var chanHost = await _ackChannels
+            var chanHost = await ackChannels
                 .Reader
                 .ReadAsync()
                 .ConfigureAwait(false);
@@ -199,7 +199,6 @@ namespace HouseofCat.RabbitMQ.Pools
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private async Task<IChannelHost> CreateChannelAsync(ulong channelId, bool ackable)
         {
-            IChannelHost chanHost = null;
             IConnectionHost connHost = null;
 
             while (true)
@@ -219,7 +218,8 @@ namespace HouseofCat.RabbitMQ.Pools
                 // Create a Channel Host
                 try
                 {
-                    chanHost = new ChannelHost(channelId, connHost, ackable);
+                    var chanHost = new ChannelHost(channelId, connHost, ackable);
+                    await chanHost.MakeChannelAsync().ConfigureAwait(false);
                     await ReturnConnectionWithOptionalSleep(connHost, channelId, 0).ConfigureAwait(false);
                     _flaggedChannels[chanHost.ChannelId] = false;
                     _logger.LogDebug(LogMessages.ChannelPools.CreateChannelSuccess, channelId);
@@ -268,14 +268,16 @@ namespace HouseofCat.RabbitMQ.Pools
 
             if (chanHost.Ackable)
             {
-                await _ackChannels
+                var ackChannels = await _lazyAckChannels.ConfigureAwait(false);
+                await ackChannels
                     .Writer
                     .WriteAsync(chanHost)
                     .ConfigureAwait(false);
             }
             else
             {
-                await _channels
+                var channels = await _lazyChannels.ConfigureAwait(false);
+                await channels
                     .Writer
                     .WriteAsync(chanHost)
                     .ConfigureAwait(false);
@@ -308,23 +310,26 @@ namespace HouseofCat.RabbitMQ.Pools
 
         private async Task CloseChannelsAsync()
         {
+            var channels = await _lazyChannels.ConfigureAwait(false);
+            var ackChannels = await _lazyAckChannels.ConfigureAwait(false);
+            
             // Signal to Channel no more data is coming.
-            _channels.Writer.Complete();
-            _ackChannels.Writer.Complete();
+            channels.Writer.Complete();
+            ackChannels.Writer.Complete();
 
-            await _channels.Reader.WaitToReadAsync().ConfigureAwait(false);
-            while (_channels.Reader.TryRead(out IChannelHost chanHost))
+            await channels.Reader.WaitToReadAsync().ConfigureAwait(false);
+            while (channels.Reader.TryRead(out IChannelHost chanHost))
             {
                 try
-                { chanHost.Close(); }
+                { await chanHost.CloseAsync().ConfigureAwait(false); }
                 catch { }
             }
 
-            await _ackChannels.Reader.WaitToReadAsync().ConfigureAwait(false);
-            while (_ackChannels.Reader.TryRead(out IChannelHost chanHost))
+            await ackChannels.Reader.WaitToReadAsync().ConfigureAwait(false);
+            while (ackChannels.Reader.TryRead(out IChannelHost chanHost))
             {
                 try
-                { chanHost.Close(); }
+                { await chanHost.CloseAsync().ConfigureAwait(false); }
                 catch { }
             }
         }
@@ -335,8 +340,8 @@ namespace HouseofCat.RabbitMQ.Pools
             {
                 if (disposing)
                 {
-                    _channels = null;
-                    _ackChannels = null;
+                    _lazyChannels = null;
+                    _lazyAckChannels = null;
                     _flaggedChannels = null;
                     _poolLock.Dispose();
                 }

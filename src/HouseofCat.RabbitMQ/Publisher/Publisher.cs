@@ -325,7 +325,8 @@ namespace HouseofCat.RabbitMQ
             var channelHost = await _channelPool.GetChannelAsync().ConfigureAwait(false);
             if (messageProperties == null)
             {
-                messageProperties = channelHost.GetChannel().CreateBasicProperties();
+                var channel = await channelHost.GetChannelAsync().ConfigureAwait(false);
+                messageProperties = channel.CreateBasicProperties();
                 messageProperties.DeliveryMode = 2;
                 messageProperties.MessageId = messageId ?? Guid.NewGuid().ToString();
 
@@ -340,8 +341,8 @@ namespace HouseofCat.RabbitMQ
 
             try
             {
-                channelHost
-                    .GetChannel()
+                var channel = await channelHost.GetChannelAsync().ConfigureAwait(false);
+                channel
                     .BasicPublish(
                         exchange: exchangeName ?? string.Empty,
                         routingKey: routingKey,
@@ -380,13 +381,14 @@ namespace HouseofCat.RabbitMQ
 
             try
             {
-                channelHost
-                    .GetChannel()
+                var channel = await channelHost.GetChannelAsync().ConfigureAwait(false);
+                var buildProperties = await BuildPropertiesAsync(headers, channelHost, messageId, priority).ConfigureAwait(false);
+                channel
                     .BasicPublish(
                         exchange: exchangeName ?? string.Empty,
                         routingKey: routingKey,
                         mandatory: mandatory,
-                        basicProperties: BuildProperties(headers, channelHost, messageId, priority),
+                        basicProperties: buildProperties,
                         body: payload);
             }
             catch (Exception ex)
@@ -422,7 +424,8 @@ namespace HouseofCat.RabbitMQ
             var channelHost = await _channelPool.GetChannelAsync().ConfigureAwait(false);
             if (messageProperties == null)
             {
-                messageProperties = channelHost.GetChannel().CreateBasicProperties();
+                var channel = await channelHost.GetChannelAsync().ConfigureAwait(false);
+                messageProperties = channel.CreateBasicProperties();
                 messageProperties.DeliveryMode = 2;
                 messageProperties.MessageId = Guid.NewGuid().ToString();
 
@@ -437,9 +440,10 @@ namespace HouseofCat.RabbitMQ
 
             try
             {
-                var batch = channelHost.GetChannel().CreateBasicPublishBatch();
+                var channel = await channelHost.GetChannelAsync().ConfigureAwait(false);
+                var batch = channel.CreateBasicPublishBatch();
 
-                for (int i = 0; i < payloads.Count; i++)
+                for (var i = 0; i < payloads.Count; i++)
                 {
                     batch.Add(exchangeName, routingKey, mandatory, messageProperties, payloads[i]);
                 }
@@ -481,11 +485,13 @@ namespace HouseofCat.RabbitMQ
 
             try
             {
-                var batch = channelHost.GetChannel().CreateBasicPublishBatch();
+                var channel = await channelHost.GetChannelAsync().ConfigureAwait(false);
+                var batch = channel.CreateBasicPublishBatch();
 
-                for (int i = 0; i < payloads.Count; i++)
+                for (var i = 0; i < payloads.Count; i++)
                 {
-                    batch.Add(exchangeName, routingKey, mandatory, BuildProperties(headers, channelHost, null, priority), payloads[i]);
+                    var properties = await BuildPropertiesAsync(headers, channelHost, null, priority).ConfigureAwait(false);
+                    batch.Add(exchangeName, routingKey, mandatory, properties, payloads[i]);
                 }
 
                 batch.Publish();
@@ -524,13 +530,13 @@ namespace HouseofCat.RabbitMQ
 
             try
             {
-                chanHost
-                    .GetChannel()
+                var channel = await chanHost.GetChannelAsync().ConfigureAwait(false);
+                channel
                     .BasicPublish(
                         message.Envelope.Exchange,
                         message.Envelope.RoutingKey,
                         message.Envelope.RoutingOptions?.Mandatory ?? false,
-                        message.BuildProperties(chanHost, withOptionalHeaders),
+                        await message.BuildPropertiesAsync(chanHost, withOptionalHeaders).ConfigureAwait(false),
                         message.GetBodyToPublish(_serializationProvider));
             }
             catch (Exception ex)
@@ -573,18 +579,18 @@ namespace HouseofCat.RabbitMQ
 
             try
             {
-                chanHost.GetChannel().WaitForConfirmsOrDie(_waitForConfirmation);
+                var channel = await chanHost.GetChannelAsync().ConfigureAwait(false);
+                channel.WaitForConfirmsOrDie(_waitForConfirmation);
 
-                chanHost
-                    .GetChannel()
+                channel
                     .BasicPublish(
                         message.Envelope.Exchange,
                         message.Envelope.RoutingKey,
                         message.Envelope.RoutingOptions?.Mandatory ?? false,
-                        message.BuildProperties(chanHost, withOptionalHeaders),
+                        await message.BuildPropertiesAsync(chanHost, withOptionalHeaders).ConfigureAwait(false),
                         message.GetBodyToPublish(_serializationProvider));
 
-                chanHost.GetChannel().WaitForConfirmsOrDie(_waitForConfirmation);
+                channel.WaitForConfirmsOrDie(_waitForConfirmation);
             }
             catch (Exception ex)
             {
@@ -622,15 +628,16 @@ namespace HouseofCat.RabbitMQ
                 .GetChannelAsync()
                 .ConfigureAwait(false);
 
-            for (int i = 0; i < messages.Count; i++)
+            for (var i = 0; i < messages.Count; i++)
             {
                 try
                 {
-                    chanHost.GetChannel().BasicPublish(
+                    var channel = await chanHost.GetChannelAsync().ConfigureAwait(false);
+                    channel.BasicPublish(
                         messages[i].Envelope.Exchange,
                         messages[i].Envelope.RoutingKey,
                         messages[i].Envelope.RoutingOptions.Mandatory,
-                        messages[i].BuildProperties(chanHost, withOptionalHeaders),
+                        await messages[i].BuildPropertiesAsync(chanHost, withOptionalHeaders).ConfigureAwait(false),
                         messages[i].GetBodyToPublish(_serializationProvider));
                 }
                 catch (Exception ex)
@@ -671,14 +678,15 @@ namespace HouseofCat.RabbitMQ
             {
                 if (messages.Count > 0)
                 {
-                    var publishBatch = chanHost.GetChannel().CreateBasicPublishBatch();
-                    for (int i = 0; i < messages.Count; i++)
+                    var channel = await chanHost.GetChannelAsync().ConfigureAwait(false);
+                    var publishBatch = channel.CreateBasicPublishBatch();
+                    for (var i = 0; i < messages.Count; i++)
                     {
                         publishBatch.Add(
                             messages[i].Envelope.Exchange,
                             messages[i].Envelope.RoutingKey,
                             messages[i].Envelope.RoutingOptions.Mandatory,
-                            messages[i].BuildProperties(chanHost, withOptionalHeaders),
+                            await messages[i].BuildPropertiesAsync(chanHost, withOptionalHeaders).ConfigureAwait(false),
                             messages[i].GetBodyToPublish(_serializationProvider).AsMemory());
 
                         if (createReceipt)
@@ -728,14 +736,15 @@ namespace HouseofCat.RabbitMQ
         /// <param name="priority"></param>
         /// <param name="deliveryMode"></param>
         /// <returns></returns>
-        private static IBasicProperties BuildProperties(
+        private static async Task<IBasicProperties> BuildPropertiesAsync(
             IDictionary<string, object> headers,
             IChannelHost channelHost,
             string messageId = null,
             byte? priority = 0,
             byte? deliveryMode = 2)
         {
-            var props = channelHost.GetChannel().CreateBasicProperties();
+            var channel = await channelHost.GetChannelAsync().ConfigureAwait(false);
+            var props = channel.CreateBasicProperties();
             props.DeliveryMode = deliveryMode ?? 2; // Default Persisted
             props.Priority = priority ?? 0; // Default Priority
             props.MessageId = messageId ?? Guid.NewGuid().ToString();

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using HouseofCat.RabbitMQ.Pools;
 using HouseofCat.Serialization;
 using RabbitMQ.Client;
@@ -24,7 +25,7 @@ namespace HouseofCat.RabbitMQ
 
         IPublishReceipt GetPublishReceipt(bool error);
 
-        IBasicProperties BuildProperties(IChannelHost channelHost, bool withOptionalHeaders);
+        Task<IBasicProperties> BuildPropertiesAsync(IChannelHost channelHost, bool withOptionalHeaders);
     }
 
     public class Letter : IMessage
@@ -35,11 +36,12 @@ namespace HouseofCat.RabbitMQ
         public LetterMetadata LetterMetadata { get; set; }
         public byte[] Body { get; set; }
         
-        public IBasicProperties BuildProperties(IChannelHost channelHost, bool withOptionalHeaders)
+        public async Task<IBasicProperties> BuildPropertiesAsync(IChannelHost channelHost, bool withOptionalHeaders)
         {
             MessageId ??= Guid.NewGuid().ToString();
 
-            var props = this.CreateBasicProperties(channelHost, withOptionalHeaders, LetterMetadata);
+            var props = 
+                await this.CreateBasicPropertiesAsync(channelHost, withOptionalHeaders, LetterMetadata).ConfigureAwait(false);
             props.MessageId = MessageId;
 
             // Non-optional Header.
